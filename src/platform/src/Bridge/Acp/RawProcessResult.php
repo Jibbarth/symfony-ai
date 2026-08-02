@@ -11,12 +11,14 @@
 
 namespace Symfony\AI\Platform\Bridge\Acp;
 
+use Amp\Future;
+use Amp\Pipeline\Queue;
+use Psr\Log\LoggerInterface;
 use Symfony\AI\Platform\Bridge\Acp\Exception\ProtocolException;
-use Symfony\AI\Platform\Bridge\Acp\Exception\TransportException;
 use Symfony\AI\Platform\Result\RawResultInterface;
 
 /**
- * Wraps ACP process output as a raw result.
+ * Wraps ACP response from JsonRpcPeer as a raw result.
  */
 final class RawProcessResult implements RawResultInterface
 {
@@ -38,8 +40,9 @@ final class RawProcessResult implements RawResultInterface
     private ?array $response = null;
 
     public function __construct(
-        private readonly ModelClient $client,
-        private readonly int $requestId,
+        private readonly Future $future,
+        private readonly LoggerInterface $logger,
+        private readonly ?Queue $notificationQueue = null,
     ) {
     }
 
@@ -78,29 +81,7 @@ final class RawProcessResult implements RawResultInterface
      */
     public function drainPending(): array
     {
-        $late = [];
-
-        while (true) {
-            try {
-                $message = $this->client->readNextMessage();
-
-                if (isset($message['id'])) {
-                    if ($message['id'] === $this->requestId) {
-                        $this->response = $message;
-                        $this->processResponse();
-
-                        break;
-                    }
-                } else {
-                    $this->lines[] = $message;
-                    $late[] = $message;
-                }
-            } catch (TransportException) {
-                break;
-            }
-        }
-
-        return $late;
+        return $this->lines;
     }
 
     public function getObject(): object
@@ -141,24 +122,33 @@ final class RawProcessResult implements RawResultInterface
      */
     private function streamLines(): \Generator
     {
-        while (true) {
-            $message = $this->client->readNextMessage();
-
-            if (isset($message['id'])) {
-                if ($message['id'] === $this->requestId) {
-                    $this->response = $message;
-                    $this->processResponse();
-                    $this->drained = true;
-
-                    break;
-                }
-
-                throw new ProtocolException(\sprintf('Unexpected response ID "%s", expected "%s".', $message['id'], $this->requestId));
+        // First yield notifications from the queue
+        if (null !== $this->notificationQueue) {
+            foreach ($this->notificationQueue->iterate() as $message) {
+                $this->lines[] = $message;
+                yield $message;
             }
-
-            $this->lines[] = $message;
-            yield $message;
         }
+
+        try {
+            $result = $this->future->await();
+            $this->response = ['result' => $result];
+            $this->processResponse();
+        } catch (\Fabpot\JsonRpc\Exception\JsonRpcException $e) {
+            $this->response = ['error' => ['code' => $e->getCode(), 'message' => $e->getMessage(), 'data' => $e->getData()]];
+            $this->processResponse();
+        } catch (\Fabpot\JsonRpc\Exception\ConnectionClosedException $e) {
+            $this->response = ['error' => ['code' => -32603, 'message' => 'Connection closed: '.$e->getMessage()]];
+            $this->processResponse();
+        } catch (\Throwable $e) {
+            $this->logger->error('ACP request failed', ['exception' => $e]);
+            $this->response = ['error' => ['code' => -32603, 'message' => $e->getMessage()]];
+            $this->processResponse();
+        }
+
+        $this->drained = true;
+
+        yield from [];
     }
 
     private function processResponse(): void

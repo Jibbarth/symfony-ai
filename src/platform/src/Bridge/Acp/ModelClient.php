@@ -11,24 +11,27 @@
 
 namespace Symfony\AI\Platform\Bridge\Acp;
 
+use Amp\Cancellation;
+use Amp\Future;
+use Amp\Pipeline\Queue;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Symfony\AI\Platform\Bridge\Acp\Connection\ConnectionInterface;
 use Symfony\AI\Platform\Bridge\Acp\Exception\ProtocolException;
-use Symfony\AI\Platform\Bridge\Acp\Exception\TransportException;
-use Symfony\AI\Platform\Bridge\Acp\Transport\ProcessTransport;
-use Symfony\AI\Platform\Bridge\Acp\Transport\TransportInterface;
 use Symfony\AI\Platform\Model;
 use Symfony\AI\Platform\ModelClientInterface;
 use Symfony\AI\Platform\Result\RawResultInterface;
 
+use function Amp\async;
+
 /**
- * ACP model client using transport abstraction.
+ * ACP model client using JsonRpcPeer.
  */
 final class ModelClient implements ModelClientInterface
 {
-    private TransportInterface $transport;
+    private ?ConnectionInterface $connection = null;
+    private ?Future $listenerFuture = null;
     private ?string $sessionId = null;
-    private int $nextId = 0;
     private bool $handshakeDone = false;
 
     /**
@@ -41,6 +44,13 @@ final class ModelClient implements ModelClientInterface
      */
     private array $agentInfo = [];
 
+    private ?Queue $notificationQueue = null;
+
+    /**
+     * @var \Closure(PermissionRequest): ?string|null
+     */
+    private ?\Closure $onPermissionRequest;
+
     /**
      * @param array<string, string> $environment
      */
@@ -49,14 +59,11 @@ final class ModelClient implements ModelClientInterface
         private readonly ?string $workingDirectory = null,
         private readonly array $environment = [],
         private readonly LoggerInterface $logger = new NullLogger(),
-        ?TransportInterface $transport = null,
+        ?ConnectionInterface $connection = null,
+        ?callable $onPermissionRequest = null,
     ) {
-        $this->transport = $transport ?? new ProcessTransport(
-            $command,
-            $workingDirectory,
-            $environment,
-            $logger,
-        );
+        $this->connection = $connection;
+        $this->onPermissionRequest = null === $onPermissionRequest ? null : \Closure::fromCallable($onPermissionRequest);
     }
 
     public function supports(Model $model): bool
@@ -70,58 +77,56 @@ final class ModelClient implements ModelClientInterface
             throw new ProtocolException(\sprintf('Unsupported model "%s".', $model::class));
         }
 
-        $this->transport->start();
+        $this->ensurePeer();
+        $this->startListener();
 
         if (!$this->handshakeDone) {
             $this->performHandshake($model, $options);
         }
 
         $prompt = $this->normalizePrompt($payload);
-        $requestId = $this->nextId++;
 
-        $this->transport->send([
-            'jsonrpc' => '2.0',
-            'id' => $requestId,
-            'method' => 'session/prompt',
-            'params' => [
-                'sessionId' => $this->sessionId,
-                'prompt' => $prompt,
-            ],
+        $queue = new Queue(1024);
+        $this->notificationQueue = $queue;
+
+        $future = $this->connection->request('session/prompt', [
+            'sessionId' => $this->sessionId,
+            'prompt' => $prompt,
         ]);
+        $future->finally(static function () use ($queue): void {
+            $queue->complete();
+        })->ignore();
 
-        return new RawProcessResult($this, $requestId);
+        return new RawProcessResult($future, $this->logger, $queue);
     }
 
     public function close(): void
     {
-        if (!$this->transport->isRunning()) {
+        if (null === $this->connection) {
             return;
         }
 
         if (null !== $this->sessionId && ($this->agentCapabilities['sessionCapabilities']['close'] ?? null) !== null) {
-            $requestId = $this->nextId++;
-            $this->transport->send([
-                'jsonrpc' => '2.0',
-                'id' => $requestId,
-                'method' => 'session/close',
-                'params' => ['sessionId' => $this->sessionId],
-            ]);
-            $this->readUntilResponse($requestId);
+            try {
+                $this->connection->request('session/close', ['sessionId' => $this->sessionId])->await();
+            } catch (\Throwable) {
+            }
         }
 
-        $this->transport->close();
+        $this->connection->close();
+        if (null !== $this->listenerFuture) {
+            try {
+                $this->listenerFuture->await();
+            } catch (\Throwable) {
+            }
+        }
+
+        $this->connection = null;
+        $this->listenerFuture = null;
         $this->sessionId = null;
         $this->handshakeDone = false;
         $this->agentCapabilities = [];
         $this->agentInfo = [];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function readNextMessage(): array
-    {
-        return $this->transport->readNextMessage();
     }
 
     /**
@@ -140,6 +145,56 @@ final class ModelClient implements ModelClientInterface
         return $this->agentInfo;
     }
 
+    private function ensurePeer(): void
+    {
+        $this->connection ??= new Connection\ProcessConnection(
+            $this->command,
+            $this->workingDirectory,
+            $this->environment,
+            $this->logger,
+        );
+        if (!$this->connection->isRunning()) {
+            $this->connection->start();
+        }
+
+        $this->connection->onNotification('status', function (array $params): void {
+            $this->logger->info('ACP agent status', ['status' => $params['status'] ?? 'unknown']);
+        });
+
+        $this->connection->onNotification('session/update', function (array $params): void {
+            if (null !== $this->notificationQueue) {
+                $this->notificationQueue->push([
+                    'jsonrpc' => '2.0',
+                    'method' => 'session/update',
+                    'params' => $params,
+                ]);
+            }
+        });
+
+        $this->connection->onNotification('agent/messageStream', function (array $params): void {
+            if (null !== $this->notificationQueue) {
+                $this->notificationQueue->push([
+                    'jsonrpc' => '2.0',
+                    'method' => 'agent/messageStream',
+                    'params' => $params,
+                ]);
+            }
+        });
+
+        $this->connection->onRequest('session/request_permission', function (array $params, Cancellation $cancellation): array {
+            return $this->handlePermissionRequest($params);
+        });
+    }
+
+    private function startListener(): void
+    {
+        if (null !== $this->listenerFuture) {
+            return;
+        }
+
+        $this->listenerFuture = async(fn () => $this->connection->listen());
+    }
+
     /**
      * @param array<string, mixed> $options
      */
@@ -147,39 +202,30 @@ final class ModelClient implements ModelClientInterface
     {
         $this->logger->info('ACP handshake initializing');
 
-        $requestId = $this->nextId++;
-        $this->transport->send([
-            'jsonrpc' => '2.0',
-            'id' => $requestId,
-            'method' => 'initialize',
-            'params' => [
-                'protocolVersion' => $model->protocolVersion,
-                'clientCapabilities' => (object) $model->clientCapabilities,
-                'clientInfo' => [
-                    'name' => 'symfony-ai',
-                    'title' => 'Symfony AI',
-                    'version' => '0.1.0',
-                ],
+        $initializeResult = $this->connection->request('initialize', [
+            'protocolVersion' => $model->protocolVersion,
+            'clientCapabilities' => (object) $model->clientCapabilities,
+            'clientInfo' => [
+                'name' => 'symfony-ai',
+                'title' => 'Symfony AI',
+                'version' => '0.1.0',
             ],
-        ]);
+        ])->await();
 
-        $response = $this->readUntilResponse($requestId);
-        $result = $this->extractResult($response);
-        $protocolVersion = $result['protocolVersion'] ?? null;
+        $protocolVersion = $initializeResult['protocolVersion'] ?? null;
         if (!\is_int($protocolVersion) || $protocolVersion < 1) {
             throw new ProtocolException('ACP returned an unsupported protocol version.');
         }
 
         $model->protocolVersion = min($model->protocolVersion, $protocolVersion);
-        $this->agentCapabilities = \is_array($result['agentCapabilities'] ?? null) ? $result['agentCapabilities'] : [];
-        $this->agentInfo = \is_array($result['agentInfo'] ?? null) ? $result['agentInfo'] : [];
+        $this->agentCapabilities = \is_array($initializeResult['agentCapabilities'] ?? null) ? $initializeResult['agentCapabilities'] : [];
+        $this->agentInfo = \is_array($initializeResult['agentInfo'] ?? null) ? $initializeResult['agentInfo'] : [];
 
         $missingCapabilities = array_diff($model->requiredAgentCapabilities, array_keys(array_filter($this->agentCapabilities)));
         if ([] !== $missingCapabilities) {
             throw new ProtocolException(\sprintf('ACP agent is missing required capabilities: "%s".', implode(', ', $missingCapabilities)));
         }
 
-        $sessionRequestId = $this->nextId++;
         $params = [
             'cwd' => $this->resolveWorkingDirectory($options),
             'mcpServers' => [],
@@ -189,15 +235,7 @@ final class ModelClient implements ModelClientInterface
             $params['additionalDirectories'] = $options['additionalDirectories'];
         }
 
-        $this->transport->send([
-            'jsonrpc' => '2.0',
-            'id' => $sessionRequestId,
-            'method' => 'session/new',
-            'params' => $params,
-        ]);
-
-        $sessionResponse = $this->readUntilResponse($sessionRequestId);
-        $sessionResult = $this->extractResult($sessionResponse);
+        $sessionResult = $this->connection->request('session/new', $params)->await();
         $sessionId = $sessionResult['sessionId'] ?? null;
 
         if (!\is_string($sessionId) || '' === $sessionId) {
@@ -211,53 +249,28 @@ final class ModelClient implements ModelClientInterface
     }
 
     /**
-     * @return array<string, mixed>
-     */
-    private function readUntilResponse(int $requestId): array
-    {
-        while (true) {
-            $message = $this->readNextMessage();
-            $messageId = $message['id'] ?? null;
-
-            if (null === $messageId) {
-                if (isset($message['method'])) {
-                    $this->handleNotification($message);
-                }
-                continue;
-            }
-
-            if ($messageId !== $requestId) {
-                throw new ProtocolException(\sprintf('Unexpected response ID "%s", expected "%s".', $messageId, $requestId));
-            }
-
-            return $message;
-        }
-    }
-
-    /**
-     * @param array<string, mixed> $message
-     */
-    private function handleNotification(array $message): void
-    {
-        if ('status' === ($message['method'] ?? null)) {
-            $this->logger->info('ACP agent status', ['status' => $message['params']['status'] ?? 'unknown']);
-        }
-    }
-
-    /**
-     * @param array<string, mixed> $message
+     * @param array<string, mixed> $params
      *
      * @return array<string, mixed>
      */
-    private function extractResult(array $message): array
+    private function handlePermissionRequest(array $params): array
     {
-        if (isset($message['error'])) {
-            $error = $message['error'];
-            $messageText = \is_array($error) ? (string) ($error['message'] ?? 'Unknown ACP error') : 'Unknown ACP error';
-            throw new ProtocolException($messageText);
+        $request = PermissionRequest::fromParams($params);
+
+        $this->logger->info('Permission requested', [
+            'toolCallId' => $request->toolCallId,
+            'title' => $request->title,
+            'kind' => $request->kind,
+        ]);
+
+        if (null !== $this->onPermissionRequest) {
+            $optionId = ($this->onPermissionRequest)($request);
+            if (null !== $optionId) {
+                return ['outcome' => ['outcome' => 'selected', 'optionId' => $optionId]];
+            }
         }
 
-        return \is_array($message['result'] ?? null) ? $message['result'] : [];
+        return ['outcome' => ['outcome' => 'denied', 'optionId' => '']];
     }
 
     /**

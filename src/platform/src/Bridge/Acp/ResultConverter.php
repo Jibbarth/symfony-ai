@@ -215,6 +215,18 @@ final class ResultConverter implements ResultConverterInterface
         if ('completed' === $status || 'failed' === $status) {
             $arguments = [];
             $rawOutput = $update['rawOutput'] ?? [];
+            $content = $update['content'] ?? [];
+
+            // Extract text from content field (used for failed tool calls with permission denial messages)
+            $contentText = '';
+            if (\is_array($content)) {
+                foreach ($content as $item) {
+                    if (\is_array($item) && isset($item['content']['type']) && 'text' === $item['content']['type'] && isset($item['content']['text'])) {
+                        $contentText = $item['content']['text'];
+                        break;
+                    }
+                }
+            }
 
             if (\is_array($rawOutput) && isset($rawOutput['output'])) {
                 if (\is_array($rawOutput['output'])) {
@@ -222,6 +234,8 @@ final class ResultConverter implements ResultConverterInterface
                 } else {
                     $arguments = ['output' => $rawOutput['output']];
                 }
+            } elseif ('' !== $contentText) {
+                $arguments = ['output' => $contentText];
             }
 
             $toolCall = new ToolCall($id, $title, $arguments);

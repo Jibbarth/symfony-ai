@@ -20,6 +20,7 @@
         "php": ">=8.2",
         "amphp/process": "^2.0",
         "amphp/socket": "^2.3",
+        "fabpot/json-rpc-peer": "0.5",
         "revolt/event-loop": "^1.0",
         "symfony/ai-platform": "^0.12",
         "symfony/process": "^7.3|^8.0"
