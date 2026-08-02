@@ -13,6 +13,7 @@ namespace Symfony\AI\Platform\Bridge\Acp;
 
 use Amp\Future;
 use Amp\Pipeline\Queue;
+use Fabpot\JsonRpc\JsonRpcError;
 use Psr\Log\LoggerInterface;
 use Symfony\AI\Platform\Bridge\Acp\Exception\ProtocolException;
 use Symfony\AI\Platform\Result\RawResultInterface;
@@ -74,16 +75,6 @@ final class RawProcessResult implements RawResultInterface
         yield from $this->streamLines();
     }
 
-    /**
-     * Reads pending notifications after response.
-     *
-     * @return list<array<string, mixed>>
-     */
-    public function drainPending(): array
-    {
-        return $this->lines;
-    }
-
     public function getObject(): object
     {
         if (!$this->drained) {
@@ -138,11 +129,11 @@ final class RawProcessResult implements RawResultInterface
             $this->response = ['error' => ['code' => $e->getCode(), 'message' => $e->getMessage(), 'data' => $e->getData()]];
             $this->processResponse();
         } catch (\Fabpot\JsonRpc\Exception\ConnectionClosedException $e) {
-            $this->response = ['error' => ['code' => -32603, 'message' => 'Connection closed: '.$e->getMessage()]];
+            $this->response = ['error' => ['code' => JsonRpcError::INTERNAL_ERROR, 'message' => 'Connection closed: '.$e->getMessage()]];
             $this->processResponse();
         } catch (\Throwable $e) {
             $this->logger->error('ACP request failed', ['exception' => $e]);
-            $this->response = ['error' => ['code' => -32603, 'message' => $e->getMessage()]];
+            $this->response = ['error' => ['code' => JsonRpcError::INTERNAL_ERROR, 'message' => $e->getMessage()]];
             $this->processResponse();
         }
 
