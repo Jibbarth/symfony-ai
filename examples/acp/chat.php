@@ -22,7 +22,7 @@ $platform = Factory::createPlatform(
 );
 
 $messages = new MessageBag(
-    Message::ofUser('Explain the architecture of this project in 3 sentences.'),
+    Message::ofUser('Explain the architecture of this project in 3 sentences. DO NOT use skills'),
 );
 
 $result = $platform->invoke('acp-v1', $messages);

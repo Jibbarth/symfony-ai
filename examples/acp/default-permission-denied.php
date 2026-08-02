@@ -10,58 +10,39 @@
  */
 
 use Symfony\AI\Platform\Bridge\Acp\Factory;
-use Symfony\AI\Platform\Message\Message;
-use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
 use Symfony\AI\Platform\Result\Stream\Delta\ThinkingDelta;
 use Symfony\AI\Platform\Result\Stream\Delta\ToolCallComplete;
-use Symfony\AI\Platform\Result\Stream\Delta\ToolCallStart;
-use Symfony\AI\Platform\Result\Stream\Delta\ToolInputDelta;
 
 require_once dirname(__DIR__).'/bootstrap.php';
 
 $platform = Factory::createPlatform(
-    workingDirectory: dirname(__DIR__, 2),
     command: env('ACP_BINARY'),
     logger: logger(),
 );
 
-$messages = new MessageBag(
-    Message::ofUser('Read the top-level README.md and summarize it in two sentences. Tell me which tool you plan to use before calling it.'),
-);
-
-$result = $platform->invoke('acp-v1', $messages, ['stream' => true]);
+$result = $platform->invoke('acp-v1', 'Delete the file /tmp/unwanted.txt', ['stream' => true]);
 
 foreach ($result->asStream() as $delta) {
-    if ($delta instanceof TextDelta) {
-        output()->write($delta->getText());
-        continue;
-    }
-
     if ($delta instanceof ThinkingDelta) {
         output()->write('<fg=#999999>'.$delta->getThinking().'</>');
         continue;
     }
 
-    if ($delta instanceof ToolCallStart) {
-        output()->writeln(\PHP_EOL.'<info>[tool: '.$delta->getName().']</info>');
-        continue;
-    }
-
-    if ($delta instanceof ToolInputDelta) {
-        output()->write('<fg=#999999>'.$delta->getPartialJson().'</>');
+    if ($delta instanceof TextDelta) {
+        output()->write($delta->getText());
         continue;
     }
 
     if ($delta instanceof ToolCallComplete) {
         foreach ($delta->getToolCalls() as $toolCall) {
-            output()->writeln(\PHP_EOL.'<info>[tool completed: '.$toolCall->getName().']</info>');
+            output()->writeln('');
+            output()->writeln('<comment>[Permission requested]</comment> '.$toolCall->getName());
+            output()->writeln('<error>[Permission denied by default]</error>');
             $output = $toolCall->getArguments()['output'] ?? null;
-            if (is_string($output) && '(no output)' !== $output && '' !== $output) {
+            if (is_string($output) && '' !== $output) {
                 output()->writeln('<fg=#999999>[tool output]</> '.$output);
             }
         }
     }
 }
-
-echo \PHP_EOL;
