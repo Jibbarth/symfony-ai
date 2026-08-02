@@ -40,6 +40,10 @@ final class RawProcessResult implements RawResultInterface
      */
     private ?array $response = null;
 
+    /**
+     * @param Future<mixed>                    $future
+     * @param Queue<array<string, mixed>>|null $notificationQueue
+     */
     public function __construct(
         private readonly Future $future,
         private readonly LoggerInterface $logger,

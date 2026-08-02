@@ -17,6 +17,11 @@ interface ConnectionInterface
 {
     public function start(): void;
 
+    /**
+     * @param array<string, mixed> $params
+     *
+     * @return Future<mixed>
+     */
     public function request(string $method, array $params = []): Future;
 
     public function onNotification(string $method, callable $handler): void;

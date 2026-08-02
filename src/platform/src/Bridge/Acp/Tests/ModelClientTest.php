@@ -11,6 +11,7 @@
 
 namespace Symfony\AI\Platform\Bridge\Acp\Tests;
 
+use Amp\Cancellation;
 use Amp\Future;
 use Amp\NullCancellation;
 use PHPUnit\Framework\TestCase;
@@ -164,7 +165,7 @@ final class ModelClientTest extends TestCase
                 '{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":"session-1","toolCall":{"toolCallId":"call-1","title":"Delete file","kind":"delete","status":"pending"},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"}]}}',
             ]
         );
-        $client = new ModelClient('dummy', null, [], new NullLogger(), $connection, static fn (PermissionRequest $request): ?string => 'allow-once');
+        $client = new ModelClient('dummy', null, [], new NullLogger(), $connection, static fn (PermissionRequest $request): string => 'allow-once');
 
         $result = $client->request(new Acp('acp-v1'), 'Hello');
         $this->assertSame(['stopReason' => 'end_turn'], $result->getData());
@@ -214,7 +215,14 @@ final class FakeConnection implements ConnectionInterface
      */
     private array $serverMessages = [];
 
+    /**
+     * @var array<string, callable(array<string, mixed>): void>
+     */
     private array $notificationHandlers = [];
+
+    /**
+     * @var array<string, callable(array<string, mixed>, Cancellation): array<string, mixed>>
+     */
     private array $requestHandlers = [];
     private bool $running = false;
     private int $requestId = 0;
@@ -240,6 +248,11 @@ final class FakeConnection implements ConnectionInterface
         $this->running = true;
     }
 
+    /**
+     * @param array<string, mixed> $params
+     *
+     * @return Future<mixed>
+     */
     public function request(string $method, array $params = []): Future
     {
         ++$this->requestId;

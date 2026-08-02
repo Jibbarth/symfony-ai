@@ -30,6 +30,9 @@ final class ProcessConnection implements ConnectionInterface
     private ?JsonRpcDispatcher $dispatcher = null;
     private bool $running = false;
 
+    /**
+     * @param array<string, string> $environment
+     */
     public function __construct(
         private readonly string $command,
         private readonly ?string $workingDirectory = null,
@@ -110,6 +113,9 @@ final class ProcessConnection implements ConnectionInterface
         return $this->running;
     }
 
+    /**
+     * @return list<string>
+     */
     private function buildCommand(): array
     {
         $parts = preg_split('/\s+/', trim($this->command)) ?: [];

@@ -18,6 +18,7 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\AI\Platform\Bridge\Acp\Connection\ConnectionInterface;
 use Symfony\AI\Platform\Bridge\Acp\Exception\ProtocolException;
+use Symfony\AI\Platform\Bridge\Acp\Exception\TransportException;
 use Symfony\AI\Platform\Model;
 use Symfony\AI\Platform\ModelClientInterface;
 use Symfony\AI\Platform\Result\RawResultInterface;
@@ -30,6 +31,9 @@ use function Amp\async;
 final class ModelClient implements ModelClientInterface
 {
     private ?ConnectionInterface $connection = null;
+    /**
+     * @var Future<void>|null
+     */
     private ?Future $listenerFuture = null;
     private ?string $sessionId = null;
     private bool $handshakeDone = false;
@@ -44,6 +48,9 @@ final class ModelClient implements ModelClientInterface
      */
     private array $agentInfo = [];
 
+    /**
+     * @var Queue<array<string, mixed>>|null
+     */
     private ?Queue $notificationQueue = null;
 
     /**
