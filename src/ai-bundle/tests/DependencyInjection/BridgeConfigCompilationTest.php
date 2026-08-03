@@ -113,6 +113,31 @@ class BridgeConfigCompilationTest extends TestCase
         yield 'openresponses' => ['openresponses', ['inst' => ['base_url' => 'http://localhost:8080']], 'ai.platform.openresponses.inst'];
     }
 
+    #[TestDox('ACP platform config compiles with permission handler service')]
+    public function testAcpPlatformConfigCompilesWithPermissionHandlerService()
+    {
+        $container = $this->loadContainer([
+            'ai' => [
+                'platform' => [
+                    'acp' => [
+                        'command' => 'opencode acp',
+                        'permission_handler' => 'app.acp_permission_handler',
+                    ],
+                ],
+                'agent' => ['test' => ['model' => 'test']],
+            ],
+        ]);
+
+        $container->setDefinition('app.acp_permission_handler', new Definition(\Closure::class));
+        $container->getDefinition('ai.platform.acp')->setPublic(true)->setLazy(false);
+        $container->getCompiler()->getPassConfig()->setRemovingPasses([]);
+        $container->getCompiler()->getPassConfig()->setAfterRemovingPasses([]);
+        $container->compile();
+
+        $definition = $container->getDefinition('ai.platform.acp');
+        $this->assertSame('app.acp_permission_handler', (string) $definition->getArgument(12));
+    }
+
     #[TestDox('Failover platform config compiles with referenced platforms')]
     public function testFailoverPlatformConfigCompiles()
     {
@@ -297,7 +322,7 @@ class BridgeConfigCompilationTest extends TestCase
     public static function providePlatformConfigs(): iterable
     {
         yield 'acp' => ['acp', ['command' => 'opencode acp'], 'ai.platform.acp'];
-        yield 'acp_socket' => ['acp', ['transport' => 'socket', 'host' => '127.0.0.1', 'port' => 3000], 'ai.platform.acp'];
+        yield 'acp_socket' => ['acp', ['connection' => 'socket', 'host' => '127.0.0.1', 'port' => 3000], 'ai.platform.acp'];
         yield 'albert' => ['albert', ['api_key' => 'k', 'base_url' => 'https://albert.example.com'], 'ai.platform.albert'];
         yield 'amazeeai' => ['amazeeai', ['api_key' => 'k', 'base_url' => 'https://amazeeai.example.com'], 'ai.platform.amazeeai'];
         yield 'anthropic' => ['anthropic', ['api_key' => 'k'], 'ai.platform.anthropic'];

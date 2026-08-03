@@ -16,20 +16,20 @@ use Symfony\Component\Config\Definition\Builder\ArrayNodeDefinition;
 return (new ArrayNodeDefinition('acp'))
     ->validate()
         ->ifTrue(static function (array $value): bool {
-            if ('socket' === ($value['transport'] ?? 'process')) {
+            if ('socket' === ($value['connection'] ?? 'process')) {
                 return !(isset($value['host'], $value['port']));
             }
 
             return false;
         })
-        ->thenInvalid('ACP socket transport requires both "host" and "port".')
+        ->thenInvalid('ACP socket connection requires both "host" and "port".')
     ->end()
     ->children()
         ->stringNode('name')
             ->defaultValue('acp')
             ->cannotBeEmpty()
         ->end()
-        ->enumNode('transport')
+        ->enumNode('connection')
             ->values(['process', 'socket'])
             ->defaultValue('process')
         ->end()
@@ -37,6 +37,9 @@ return (new ArrayNodeDefinition('acp'))
         ->stringNode('host')->end()
         ->integerNode('port')->min(1)->max(65535)->end()
         ->stringNode('working_directory')->end()
+        ->scalarNode('permission_handler')
+            ->info('Service id of a callable invoked for ACP session/request_permission decisions.')
+        ->end()
         ->arrayNode('environment')
             ->useAttributeAsKey('name')
             ->scalarPrototype()->end()

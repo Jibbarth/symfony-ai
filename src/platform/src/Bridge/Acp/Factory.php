@@ -13,9 +13,9 @@ namespace Symfony\AI\Platform\Bridge\Acp;
 
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Symfony\AI\Platform\Bridge\Acp\Connection\ProcessConnection;
+use Symfony\AI\Platform\Bridge\Acp\Connection\SocketConnection;
 use Symfony\AI\Platform\Bridge\Acp\Exception\TransportException;
-use Symfony\AI\Platform\Bridge\Acp\Transport\ProcessTransport;
-use Symfony\AI\Platform\Bridge\Acp\Transport\SocketTransport;
 use Symfony\AI\Platform\Contract;
 use Symfony\AI\Platform\ModelCatalog\ModelCatalogInterface;
 use Symfony\AI\Platform\ModelRouter\CatalogBasedModelRouter;
@@ -43,18 +43,19 @@ class Factory
         ModelCatalogInterface $modelCatalog = new ModelCatalog(),
         ?Contract $contract = null,
         ?EventDispatcherInterface $eventDispatcher = null,
-        string $transport = 'process',
+        string $connectionType = 'process',
         ?string $host = null,
         ?int $port = null,
+        ?callable $onPermissionRequest = null,
     ): ProviderInterface {
         $logger ??= new NullLogger();
-        if ('socket' === $transport) {
+        if ('socket' === $connectionType) {
             if (null === $host || null === $port) {
-                throw new TransportException('ACP socket transport requires both "host" and "port".');
+                throw new TransportException('ACP socket connection requires both "host" and "port".');
             }
-            $transportInstance = new SocketTransport(\sprintf('tcp://%s:%d', $host, $port), $logger);
+            $connection = new SocketConnection(\sprintf('tcp://%s:%d', $host, $port), $logger);
         } else {
-            $transportInstance = new ProcessTransport(
+            $connection = new ProcessConnection(
                 trim($command ?? ''),
                 $workingDirectory,
                 $environment,
@@ -67,7 +68,8 @@ class Factory
             workingDirectory: $workingDirectory,
             environment: $environment,
             logger: $logger,
-            transport: $transportInstance,
+            connection: $connection,
+            onPermissionRequest: $onPermissionRequest,
         );
 
         return new Provider(
@@ -94,12 +96,13 @@ class Factory
         ?Contract $contract = null,
         ?EventDispatcherInterface $eventDispatcher = null,
         ?ModelRouterInterface $modelRouter = null,
-        string $transport = 'process',
+        string $connectionType = 'process',
         ?string $host = null,
         ?int $port = null,
+        ?callable $onPermissionRequest = null,
     ): Platform {
         return new Platform(
-            [self::createProvider($name, $command, $workingDirectory, $environment, $logger, $modelCatalog, $contract, $eventDispatcher, $transport, $host, $port)],
+            [self::createProvider($name, $command, $workingDirectory, $environment, $logger, $modelCatalog, $contract, $eventDispatcher, $connectionType, $host, $port, $onPermissionRequest)],
             $modelRouter ?? new CatalogBasedModelRouter(),
             $eventDispatcher,
         );

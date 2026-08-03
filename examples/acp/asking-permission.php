@@ -10,29 +10,51 @@
  */
 
 use Symfony\AI\Platform\Bridge\Acp\Factory;
-use Symfony\AI\Platform\Message\Message;
-use Symfony\AI\Platform\Message\MessageBag;
+use Symfony\AI\Platform\Bridge\Acp\PermissionRequest;
 use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
 use Symfony\AI\Platform\Result\Stream\Delta\ThinkingDelta;
 use Symfony\AI\Platform\Result\Stream\Delta\ToolCallComplete;
 use Symfony\AI\Platform\Result\Stream\Delta\ToolCallStart;
 use Symfony\AI\Platform\Result\Stream\Delta\ToolInputDelta;
+use Symfony\Component\Console\Helper\QuestionHelper;
+use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\Console\Output\ConsoleOutput;
+use Symfony\Component\Console\Question\ChoiceQuestion;
 
 require_once dirname(__DIR__).'/bootstrap.php';
 
+function askPermission(string $title, string $kind, array $options, ConsoleOutput $output): ?string
+{
+    $helper = new QuestionHelper();
+    $input = new ArgvInput();
+
+    $choices = array_column($options, 'name');
+    $question = new ChoiceQuestion(
+        sprintf('<question>Permission requested: %s (%s)</question> ', $title, $kind),
+        $choices,
+        0
+    );
+    $question->setErrorMessage('Invalid choice. Please select a valid option.');
+
+    $selectedName = $helper->ask($input, $output, $question);
+    $selectedOption = array_filter($options, static fn ($opt) => $opt['name'] === $selectedName);
+    $selectedOption = array_values($selectedOption);
+
+    return $selectedOption[0]['optionId'] ?? null;
+}
+
 $platform = Factory::createPlatform(
-    workingDirectory: dirname(__DIR__, 2),
-    connectionType: 'socket',
-    host: env('ACP_HOST'),
-    port: (int) env('ACP_PORT'),
+    command: env('ACP_BINARY'),
     logger: logger(),
+    onPermissionRequest: static fn (PermissionRequest $request): ?string => askPermission(
+        $request->title,
+        $request->kind,
+        $request->options,
+        output()
+    ),
 );
 
-$messages = new MessageBag(
-    Message::ofUser('Read the top-level README.md and summarize it in two sentences. Tell me which tool you plan to use before calling it.'),
-);
-
-$result = $platform->invoke('acp-v1', $messages, ['stream' => true]);
+$result = $platform->invoke('acp-v1', 'Delete the file /tmp/unwanted.txt', ['stream' => true]);
 
 foreach ($result->asStream() as $delta) {
     if ($delta instanceof TextDelta) {
@@ -66,4 +88,4 @@ foreach ($result->asStream() as $delta) {
     }
 }
 
-echo \PHP_EOL;
+output()->writeln('');

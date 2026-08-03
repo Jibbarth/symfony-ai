@@ -167,13 +167,22 @@ final class ResultConverterTest extends TestCase
         $this->assertSame(['content' => 'file content'], $toolCalls[0]->getArguments());
     }
 
-    public function testConvertStreamingToolCallCompleteWithScalarOutput()
+    public function testConvertStreamingToolCallFailedWithContent()
     {
         $converter = new ResultConverter();
         $rawResult = new InMemoryRawResult(
             [],
             [
-                ['jsonrpc' => '2.0', 'method' => 'session/update', 'params' => ['update' => ['sessionUpdate' => 'tool_call_update', 'toolCallId' => 'call-1', 'title' => 'read_file', 'status' => 'completed', 'rawOutput' => ['output' => 'file content']]]],
+                ['jsonrpc' => '2.0', 'method' => 'session/update', 'params' => ['update' => [
+                    'sessionUpdate' => 'tool_call_update',
+                    'toolCallId' => 'call-1',
+                    'title' => 'delete_file',
+                    'status' => 'failed',
+                    'rawOutput' => ['error' => 'Permission denied'],
+                    'content' => [
+                        ['type' => 'content', 'content' => ['type' => 'text', 'text' => 'The user rejected permission to use this specific tool call.']],
+                    ],
+                ]]],
             ],
         );
 
@@ -188,7 +197,9 @@ final class ResultConverterTest extends TestCase
         $this->assertInstanceOf(ToolCallComplete::class, $chunks[0]);
         $toolCalls = $chunks[0]->getToolCalls();
         $this->assertCount(1, $toolCalls);
-        $this->assertSame(['output' => 'file content'], $toolCalls[0]->getArguments());
+        $this->assertSame('call-1', $toolCalls[0]->getId());
+        $this->assertSame('delete_file', $toolCalls[0]->getName());
+        $this->assertArrayHasKey('output', $toolCalls[0]->getArguments());
     }
 
     public function testConvertStreamingAgentMessageChunk()

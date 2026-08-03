@@ -9,7 +9,6 @@ parameters:
         - Tests/
     excludePaths:
         - vendor/
-        - Transport
     treatPhpDocTypesAsCertain: false
     ignoreErrors:
         -

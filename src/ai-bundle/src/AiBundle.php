@@ -439,9 +439,10 @@ final class AiBundle extends AbstractBundle
                     null,
                     new Reference('event_dispatcher'),
                     null,
-                    $platform['transport'],
+                    $platform['connection'],
                     $platform['host'] ?? null,
                     $platform['port'] ?? null,
+                    isset($platform['permission_handler']) ? new Reference($platform['permission_handler']) : null,
                 ])
                 ->addTag('ai.platform', ['name' => 'acp']);
 
